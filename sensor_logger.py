@@ -25,36 +25,54 @@ sensors = {
         "ip": "10.114.8.223",
         "registers": [48, 49, 50],
         "email": elektriklab_mail
+    },
+    "FırınPerformansLab": {
+        "ip": "10.114.8.136",
+        "registers": [48, 49, 50],
+        "email": elektriklab_mail
     }
 }
 
 def read_values(ip, registers):
-    client = ModbusTcpClient(host=ip, port=502)
-    client.connect()
     values = []
-    for reg in registers:
-        result = client.read_holding_registers(address=reg, count=1, slave=1)
-        if not result.isError():
-            raw = result.registers[0]
-            values.append(round(raw / 10.0, 1))
-        else:
-            values.append(None)
-    client.close()
+    client = ModbusTcpClient(host=ip, port=502)
+    try:
+        if not client.connect():
+            raise ConnectionError(f"{ip} bağlantı başarısız")
+
+        for reg in registers:
+            result = client.read_holding_registers(address=reg, count=1, slave=1)
+            if not result.isError():
+                raw = result.registers[0]
+                values.append(round(raw / 10.0, 1))
+            else:
+                values.append(None)
+    except Exception as e:
+        print(f"[HATA] {ip} için veri okunamadı → {e}")
+        values = [None] * len(registers)
+    finally:
+        client.close()
     return values
 
 def log_data(lab_name, values):
     today = time.strftime("%d-%m-%Y")
     filename = f"sensor_log_{today}_{lab_name}.txt"
     filepath = os.path.join(log_dir, filename)
+    
     if not os.path.exists(filepath):
         with open(filepath, 'w') as f:
             f.write("Zaman\tSıcaklık (\u00b0C)\tNem (%)\tYo\u011fu\u015fma Noktasi (\u00b0C)\n")
 
     now = time.strftime("%H:%M:%S")
-    line = f"{now}\t{values[0]}\t{values[1]}\t{values[2]}\n"
+
+    formatted_values = [str(v) if v is not None else "None" for v in values]
+    line = f"{now}\t{formatted_values[0]}\t{formatted_values[1]}\t{formatted_values[2]}\n"
+
     with open(filepath, 'a') as f:
         f.write(line)
+
     print(f"{lab_name} → {line.strip()}")
+
 
 def send_weekly_zip_and_clean():
     today = datetime.date.today()
@@ -111,6 +129,8 @@ try:
     while True:
         for lab_name, config in sensors.items():
             values = read_values(config['ip'], config['registers'])
+
+            # Her durumda logla, eksik veri varsa da yaz
             log_data(lab_name, values)
 
         send_weekly_zip_and_clean()

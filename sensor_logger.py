@@ -9,7 +9,7 @@ from pymodbus.client import ModbusTcpClient
 
 # === Ayarlar ===
 log_dir = "/home/testonaylab/projeler/sensor"
-email_sender = "testonayraspberrypi@gmail.com" #Gmail Adress
+email_sender = "testonayraspberrypi@gmail.com"  # Gmail Adress
 email_password = "myyo tnqh idwl qgkb"  # Gmail App Password
 
 gazlab_mail = "fatih.cilesiz@beko.com"
@@ -58,7 +58,7 @@ def log_data(lab_name, values):
     today = time.strftime("%d-%m-%Y")
     filename = f"sensor_log_{today}_{lab_name}.txt"
     filepath = os.path.join(log_dir, filename)
-    
+
     if not os.path.exists(filepath):
         with open(filepath, 'w') as f:
             f.write("Zaman\tSıcaklık (\u00b0C)\tNem (%)\tYo\u011fu\u015fma Noktasi (\u00b0C)\n")
@@ -73,7 +73,6 @@ def log_data(lab_name, values):
 
     print(f"{lab_name} → {line.strip()}")
 
-
 def send_weekly_zip_and_clean():
     today = datetime.date.today()
     if today.weekday() != 6:  # Pazar değilse çık
@@ -85,9 +84,14 @@ def send_weekly_zip_and_clean():
         zip_name = f"week_{year}_{week}_{lab_name}.zip"
         zip_path = os.path.join(log_dir, zip_name)
 
+        # ⛔ ZIP zaten varsa tekrar gönderme
+        if os.path.exists(zip_path):
+            print(f"{lab_name} için zip dosyası zaten var, tekrar gönderilmeyecek.")
+            continue
+
         # Eski .zip'leri sil (lab'a ait olanlar)
         for f in os.listdir(log_dir):
-            if f.startswith(f"week_") and f.endswith(f"_{lab_name}.zip") and f != zip_name:
+            if f.startswith("week_") and f.endswith(f"_{lab_name}.zip") and f != zip_name:
                 os.remove(os.path.join(log_dir, f))
 
         # İlgili .txt dosyaları
@@ -125,12 +129,11 @@ def send_weekly_zip_and_clean():
             os.remove(file)
             print(f"{lab_name} → Silindi: {file}")
 
+# === Ana Döngü ===
 try:
     while True:
         for lab_name, config in sensors.items():
             values = read_values(config['ip'], config['registers'])
-
-            # Her durumda logla, eksik veri varsa da yaz
             log_data(lab_name, values)
 
         send_weekly_zip_and_clean()
@@ -139,5 +142,6 @@ try:
         now = datetime.datetime.now()
         next_minute = (now + datetime.timedelta(minutes=1)).replace(second=0, microsecond=0)
         time.sleep((next_minute - now).total_seconds())
+
 except KeyboardInterrupt:
     print("Loglama durduruldu.")

@@ -1,4 +1,11 @@
 ssh testonaylab@10.114.131.140
-cd /home/testonaylab/projeler/sensor/TOLabPiZero
-./deploy_logger_update.sh
-Python programını güncelledikten sonra sistem dosyasını github reposundan çekmek için terminale gir.
+cd /home/testonaylab/projeler/sensor
+
+SİSTEMİ DURDUR
+sudo systemctl stop sensor_logger.service
+DOSYA ADRESİNE GİT
+cd /home/testonaylab/projeler/sensor
+REPOYU ÇEK (dosyaların üzerine yazar)
+git pull
+DOSYAYI MANUEL DEĞİŞTİRİP KAYDET
+sudo systemctl start sensor_logger.service

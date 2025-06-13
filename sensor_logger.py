@@ -17,7 +17,7 @@ elektriklab_mail = "ferhat_bicer@beko.com"
 
 sensors = {
     "GazLab": {
-        "ip": "10.114.8.252",
+        "ip": "10.114.8.251",
         "registers": [48, 49, 50],
         "email": gazlab_mail
     },

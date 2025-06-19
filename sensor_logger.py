@@ -6,11 +6,12 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 from pymodbus.client import ModbusTcpClient
+from openpyxl import load_workbook
 
 # === Ayarlar ===
 log_dir = "/home/testonaylab/projeler/sensor"
-email_sender = "testonayraspberrypi@gmail.com"  # Gmail Adress
-email_password = "myyo tnqh idwl qgkb"  # Gmail App Password
+email_sender = "testonayraspberrypi@gmail.com"
+email_password = "myyo tnqh idwl qgkb"
 
 gazlab_mail = "fatih.cilesiz@beko.com"
 elektriklab_mail = "ferhat_bicer@beko.com"
@@ -64,7 +65,6 @@ def log_data(lab_name, values):
             f.write("Zaman\tSıcaklık (\u00b0C)\tNem (%)\tYo\u011fu\u015fma Noktasi (\u00b0C)\n")
 
     now = time.strftime("%H:%M:%S")
-
     formatted_values = [str(v) if v is not None else "None" for v in values]
     line = f"{now}\t{formatted_values[0]}\t{formatted_values[1]}\t{formatted_values[2]}\n"
 
@@ -73,42 +73,71 @@ def log_data(lab_name, values):
 
     print(f"{lab_name} → {line.strip()}")
 
+def populate_excel_template(txt_path, lab_name, output_path):
+    today = datetime.date.today().strftime("%d-%m-%Y")
+
+    with open(txt_path, 'r') as f:
+        lines = f.readlines()
+
+    if len(lines) < 2:
+        print("Boş ya da başlıksız log dosyası.")
+        return False
+
+    data = [line.strip().split('\t') for line in lines[1:]]
+    template_path = os.path.join(log_dir, "Template_Sheet.xlsx")
+    wb = load_workbook(template_path)
+    ws = wb.active
+
+    ws["C1"] = lab_name
+    ws["D1"] = today
+
+    for i, row in enumerate(data):
+        ws.cell(row=3 + i, column=1, value=row[0])
+        ws.cell(row=3 + i, column=2, value=float(row[1]) if row[1] != "None" else None)
+        ws.cell(row=3 + i, column=3, value=float(row[2]) if row[2] != "None" else None)
+        ws.cell(row=3 + i, column=4, value=float(row[3]) if row[3] != "None" else None)
+
+    wb.save(output_path)
+    return True
+
 def send_weekly_zip_and_clean():
-    today = datetime.date.today()
-    if today.weekday() != 6:  # Pazar değilse çık
+    now = datetime.datetime.now()
+    if now.weekday() != 6 or now.hour != 12:  # Pazar saat 12 değilse çık
         return
 
-    year, week, _ = today.isocalendar()
+    year, week, _ = now.isocalendar()
 
     for lab_name in sensors:
         zip_name = f"week_{year}_{week}_{lab_name}.zip"
         zip_path = os.path.join(log_dir, zip_name)
 
-        # ⛔ ZIP zaten varsa tekrar gönderme
         if os.path.exists(zip_path):
             print(f"{lab_name} için zip dosyası zaten var, tekrar gönderilmeyecek.")
             continue
 
-        # Eski .zip'leri sil (lab'a ait olanlar)
-        for f in os.listdir(log_dir):
-            if f.startswith("week_") and f.endswith(f"_{lab_name}.zip") and f != zip_name:
-                os.remove(os.path.join(log_dir, f))
-
-        # İlgili .txt dosyaları
-        log_files = [
+        txt_files = [
             os.path.join(log_dir, f)
             for f in os.listdir(log_dir)
             if f.startswith("sensor_log_") and f.endswith(f"_{lab_name}.txt")
         ]
 
-        if not log_files:
+        xlsx_files = []
+
+        for txt_file in txt_files:
+            date_part = os.path.basename(txt_file).split("_")[2]
+            xlsx_name = f"sensor_log_{date_part}_{lab_name}.xlsx"
+            xlsx_path = os.path.join(log_dir, xlsx_name)
+            success = populate_excel_template(txt_file, lab_name, xlsx_path)
+            if success:
+                xlsx_files.append(xlsx_path)
+
+        if not xlsx_files:
             continue
 
         with zipfile.ZipFile(zip_path, 'w') as zipf:
-            for file in log_files:
+            for file in xlsx_files:
                 zipf.write(file, arcname=os.path.basename(file))
 
-        # Mail gönder
         msg = EmailMessage()
         msg['Subject'] = f"Haftalık Log - {lab_name} - Hafta {week}, {year}"
         msg['From'] = email_sender
@@ -124,8 +153,7 @@ def send_weekly_zip_and_clean():
             smtp.send_message(msg)
             print(f"{lab_name} → Mail gönderildi")
 
-        # .txt dosyalarını sil
-        for file in log_files:
+        for file in txt_files + xlsx_files:
             os.remove(file)
             print(f"{lab_name} → Silindi: {file}")
 
@@ -138,7 +166,6 @@ try:
 
         send_weekly_zip_and_clean()
 
-        # Bir sonraki tam dakikaya kadar bekle
         now = datetime.datetime.now()
         next_minute = (now + datetime.timedelta(minutes=1)).replace(second=0, microsecond=0)
         time.sleep((next_minute - now).total_seconds())

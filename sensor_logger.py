@@ -4,6 +4,7 @@ import datetime
 import zipfile
 import smtplib
 import ssl
+import socket
 from email.message import EmailMessage
 from pymodbus.client import ModbusTcpClient
 from openpyxl import load_workbook
@@ -34,6 +35,14 @@ sensors = {
     }
 }
 
+def lan_status(host="8.8.8.8", port=53, timeout=3):
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        return True
+    except socket.error:
+        return False
+
 def read_values(ip, registers):
     values = []
     client = ModbusTcpClient(host=ip, port=502)
@@ -62,7 +71,7 @@ def log_data(lab_name, values):
 
     if not os.path.exists(filepath):
         with open(filepath, 'w') as f:
-            f.write("Zaman\tSıcaklık (\u00b0C)\tNem (%)\tYo\u011fu\u015fma Noktasi (\u00b0C)\n")
+            f.write("Zaman\tSıcaklık (°C)\tNem (%)\tYoğuşma Noktasi (°C)\n")
 
     now = time.strftime("%H:%M:%S")
     formatted_values = [str(v) if v is not None else "None" for v in values]
@@ -100,62 +109,44 @@ def populate_excel_template(txt_path, lab_name, output_path):
     wb.save(output_path)
     return True
 
-def send_weekly_zip_and_clean():
-    now = datetime.datetime.now()
-    if now.weekday() != 6 or now.hour != 12:  # Pazar saat 12 değilse çık
+def send_pending_zip_files():
+    if not lan_status():
+        print("[Uyarı] İnternet bağlantısı yok, zip gönderimi ertelendi.")
         return
 
-    year, week, _ = now.isocalendar()
+    for file in os.listdir(log_dir):
+        if file.endswith(".zip") and file.startswith("week_"):
+            zip_path = os.path.join(log_dir, file)
 
-    for lab_name in sensors:
-        zip_name = f"week_{year}_{week}_{lab_name}.zip"
-        zip_path = os.path.join(log_dir, zip_name)
+            parts = file.split("_")
+            if len(parts) < 4:
+                continue
 
-        if os.path.exists(zip_path):
-            print(f"{lab_name} için zip dosyası zaten var, tekrar gönderilmeyecek.")
-            continue
+            year = parts[1]
+            week = parts[2]
+            lab_name = parts[3].replace(".zip", "")
 
-        txt_files = [
-            os.path.join(log_dir, f)
-            for f in os.listdir(log_dir)
-            if f.startswith("sensor_log_") and f.endswith(f"_{lab_name}.txt")
-        ]
+            msg = EmailMessage()
+            msg['Subject'] = f"Haftalık Log - {lab_name} - Hafta {week}, {year}"
+            msg['From'] = email_sender
+            msg['To'] = sensors[lab_name]['email']
+            msg.set_content(f"{lab_name} logları ekte .zip formatında yer almaktadır.")
 
-        xlsx_files = []
+            with open(zip_path, 'rb') as f:
+                msg.add_attachment(f.read(), maintype='application', subtype='zip', filename=file)
 
-        for txt_file in txt_files:
-            date_part = os.path.basename(txt_file).split("_")[2]
-            xlsx_name = f"sensor_log_{date_part}_{lab_name}.xlsx"
-            xlsx_path = os.path.join(log_dir, xlsx_name)
-            success = populate_excel_template(txt_file, lab_name, xlsx_path)
-            if success:
-                xlsx_files.append(xlsx_path)
+            try:
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context) as smtp:
+                    smtp.login(email_sender, email_password)
+                    smtp.send_message(msg)
+                    print(f"{lab_name} → ZIP mail gönderildi → {file}")
 
-        if not xlsx_files:
-            continue
+                os.remove(zip_path)
+                print(f"{lab_name} → ZIP silindi: {file}")
 
-        with zipfile.ZipFile(zip_path, 'w') as zipf:
-            for file in xlsx_files:
-                zipf.write(file, arcname=os.path.basename(file))
-
-        msg = EmailMessage()
-        msg['Subject'] = f"Haftalık Log - {lab_name} - Hafta {week}, {year}"
-        msg['From'] = email_sender
-        msg['To'] = sensors[lab_name]['email']
-        msg.set_content(f"{lab_name} logları ekte.")
-
-        with open(zip_path, 'rb') as f:
-            msg.add_attachment(f.read(), maintype='application', subtype='zip', filename=zip_name)
-
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context) as smtp:
-            smtp.login(email_sender, email_password)
-            smtp.send_message(msg)
-            print(f"{lab_name} → Mail gönderildi")
-
-        for file in txt_files + xlsx_files:
-            os.remove(file)
-            print(f"{lab_name} → Silindi: {file}")
+            except Exception as e:
+                print(f"{lab_name} → ZIP gönderilemedi: {e}")
 
 # === Ana Döngü ===
 try:
@@ -164,7 +155,7 @@ try:
             values = read_values(config['ip'], config['registers'])
             log_data(lab_name, values)
 
-        send_weekly_zip_and_clean()
+        send_pending_zip_files()
 
         now = datetime.datetime.now()
         next_minute = (now + datetime.timedelta(minutes=1)).replace(second=0, microsecond=0)

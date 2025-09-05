@@ -2,12 +2,10 @@ import os
 import re
 import time
 import datetime
-import zipfile
 import smtplib
 import ssl
 import socket
-from collections import defaultdict
-from zipfile import ZipFile, ZIP_DEFLATED, ZipInfo
+from zipfile import ZipFile, ZIP_DEFLATED
 from email.message import EmailMessage
 from pymodbus.client import ModbusTcpClient
 from openpyxl import load_workbook
@@ -15,7 +13,7 @@ from openpyxl import load_workbook
 # === Ayarlar ===
 log_dir = "/home/testonaylab/projeler/sensor"
 email_sender = "testonayraspberrypi@gmail.com"
-email_password = "myyo tnqh idwl qgkb"  # ÖNERİ: os.environ["SMTP_APP_PASS"] kullanın
+email_password = "myyo tnqh idwl qgkb"  # ÖNERİ: os.environ["SMTP_APP_PASS"]
 MAX_ATTACH_MB = 20  # Gmail pratik limit (~25MB) altında tut
 
 gazlab_mail = "fatih.cilesiz@beko.com"
@@ -39,12 +37,11 @@ sensors = {
     }
 }
 
-# Backlog bir kez çalıştırma bayrağı
+# Backlog bir kez çalıştırma bayrağı (program çalışırken bir defa)
 BACKLOG_PROCESSED = False
 
 # === Yardımcılar ===
 def lan_status_multi():
-    # 53 ve 443 portlarından birini başarıyla açabilirse internet var say
     for host, port in [("8.8.8.8", 53), ("1.1.1.1", 53), ("www.google.com", 443)]:
         try:
             socket.setdefaulttimeout(3)
@@ -102,7 +99,6 @@ def iso_year_week(dt: datetime.date):
 # === EXCEL DOLUM ===
 def populate_excel_template(txt_path, lab_name, output_path,
                             template_filename="SICAKLIK ÖLÇÜM.xlsx"):
-    # TXT oku
     with open(txt_path, 'r') as f:
         lines = f.readlines()
     if len(lines) < 2:
@@ -111,28 +107,23 @@ def populate_excel_template(txt_path, lab_name, output_path,
 
     base = os.path.basename(txt_path)
     m = LOG_TXT_PAT.match(base)
-    if not m:
-        print(f"[Uyarı] Tarih dosya adından çözülemedi: {base}")
-        file_date = ""
-    else:
-        file_date = m.group(1)
+    file_date = m.group(1) if m else ""
 
     data_rows = []
     for raw in lines[1:]:
         parts = raw.rstrip("\n").split("\t")
-        if len(parts) < 4: parts = parts + ["None"]*(4-len(parts))
+        if len(parts) < 4:
+            parts += ["None"] * (4 - len(parts))
         data_rows.append(parts[:4])
 
     template_path = os.path.join(log_dir, template_filename)
     wb = load_workbook(template_path)
     ws = wb.active
 
-    # Başlıklar
-    ws["C1"] = lab_name         # LAB_NAME yerine
-    ws["D1"] = file_date        # DATE yerine (GG-AA-YYYY)
+    ws["C1"] = lab_name
+    ws["D1"] = file_date  # GG-AA-YYYY
 
-    # A3↓ zaman, B3↓ sıcaklık, C3↓ %RH, D3↓ çiy noktası
-    start = 3
+    start = 3  # A3/B3/C3/D3'ten aşağı
     for i, row in enumerate(data_rows):
         r = start + i
         tm, temp, rh, dew = row
@@ -145,7 +136,6 @@ def populate_excel_template(txt_path, lab_name, output_path,
     return True
 
 def txts_for_date(date_obj: datetime.date):
-    """Verilen tarih için klasördeki (txt_path, lab_name) çiftlerini döndürür."""
     out = []
     wanted = date_obj.strftime("%d-%m-%Y")
     for fname in os.listdir(log_dir):
@@ -157,7 +147,6 @@ def txts_for_date(date_obj: datetime.date):
     return sorted(out)
 
 def ensure_excel_for_txt(txt_path: str, lab_name: str) -> str | None:
-    """TXT → XLSX (gerekliyse). Başarılıysa XLSX yolunu döndürür."""
     base, _ = os.path.splitext(os.path.basename(txt_path))
     xlsx_path = os.path.join(log_dir, base + ".xlsx")
     try:
@@ -177,10 +166,6 @@ def ensure_excel_for_txt(txt_path: str, lab_name: str) -> str | None:
 
 # === HAFTALIK ZIP (yalnızca XLSX) ===
 def zip_week_excels(lab: str, year: int, week: int) -> list[str]:
-    """
-    Verilen LAB, ISO yıl/hafta için klasördeki **sadece Excel** dosyalarını zipler.
-    20MB üstünde _partN olarak böler. Dönen liste: oluşturulan zip yolları.
-    """
     week_excels = []
     for fname in os.listdir(log_dir):
         if not (fname.endswith(".xlsx") and fname.startswith("sensor_log_")):
@@ -244,7 +229,6 @@ LAB_ALIASES = {
     "firinperformanslab": "FırınPerformansLab",
     "fırınperformanslab": "FırınPerformansLab",
 }
-
 def normalize_lab(name: str) -> str | None:
     lowered = (name.replace("İ","i").replace("I","i").replace("ı","i").lower())
     lowered = re.sub(r"[^a-z0-9]+", "", lowered)
@@ -260,7 +244,6 @@ def send_pending_zip_files():
     for file in sorted(os.listdir(log_dir)):
         if not (file.endswith(".zip") and file.startswith("week_")):
             continue
-
         m = zip_pat.match(file)
         if not m:
             print(f"[Atlandı] Beklenen ada uymuyor: {file}")
@@ -269,12 +252,10 @@ def send_pending_zip_files():
         year, week, lab_raw = m.group(1), m.group(2), m.group(3)
         zip_path = os.path.join(log_dir, file)
 
-        # Boyut kontrolü
         size_mb = os.path.getsize(zip_path) / (1024 * 1024)
         if size_mb > MAX_ATTACH_MB:
             print(f"[Uyarı] {file} {size_mb:.1f} MB > {MAX_ATTACH_MB} MB; parçalara bölünmüş olmalıydı.")
 
-        # Lab eşleştirme
         lab_key = normalize_lab(lab_raw)
         if lab_key is None or lab_key not in sensors:
             recipient = elektriklab_mail
@@ -296,12 +277,11 @@ def send_pending_zip_files():
         try:
             context = ssl.create_default_context()
             with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context) as smtp:
-                smtp.set_debuglevel(1)  # sunucu diyaloğunu göster
+                smtp.set_debuglevel(1)
                 smtp.login(email_sender, email_password)
                 smtp.send_message(msg)
                 print(f"[OK] {subject_lab_name} → ZIP mail gönderildi → {file}")
 
-            # Başarılıysa ZIP’i sil
             os.remove(zip_path)
             print(f"[Temizlendi] ZIP silindi: {file}")
 
@@ -312,7 +292,6 @@ def send_pending_zip_files():
 
 # === GÜN SONU / HAFTA SONU / TEMİZLİK ===
 def daily_finalize_to_excel(yesterday: datetime.date):
-    """Dünün TXT → Excel dönüşümleri (eksik kalmışsa hepsi)."""
     pairs = txts_for_date(yesterday)
     if not pairs:
         print(f"[GünSonu] {yesterday} için TXT yok.")
@@ -322,16 +301,8 @@ def daily_finalize_to_excel(yesterday: datetime.date):
     print(f"[GünSonu] {yesterday} için Excel üretimi tamam.")
 
 def weekly_finalize_and_send_if_sunday00(now_next_minute: datetime.datetime):
-    """
-    Pazar 00:00 anında:
-    - Dünün (Cumartesi) ISO haftası için her LAB'ın Excel’lerini zipler,
-    - ZIP’leri gönderir,
-    - Gönderim başarılı olan haftanın Excel’lerini temizler.
-    """
     if not (now_next_minute.weekday() == 6 and now_next_minute.hour == 0 and now_next_minute.minute == 0):
         return
-
-    # Önce dünün (Cumartesi) gün sonu Excel'leri üretildi (main loop'ta daily_finalize çağırıyoruz)
     yesterday = (now_next_minute.date() - datetime.timedelta(days=1))
     y, w = iso_year_week(yesterday)
 
@@ -341,10 +312,9 @@ def weekly_finalize_and_send_if_sunday00(now_next_minute: datetime.datetime):
         if zips:
             any_zip = True
             print(f"[HaftaSonu] {lab} için {y}-W{w} zip hazır: {len(zips)} parça.")
-
     if any_zip:
         send_pending_zip_files()
-        # Başarılı olan ZIP'ler silindi; şimdi haftanın Excel’lerini temizle
+        # haftanın Excel’lerini temizle
         for fname in list(os.listdir(log_dir)):
             if not (fname.endswith(".xlsx") and fname.startswith("sensor_log_")):
                 continue
@@ -361,12 +331,6 @@ def weekly_finalize_and_send_if_sunday00(now_next_minute: datetime.datetime):
                     print(f"[Uyarı] Excel silinemedi ({fname}): {e}")
 
 def retention_cleanup(now_next_minute: datetime.datetime):
-    """
-    - TXT: son 14 gün dışını sil.
-    - ZIP: son 2 ISO hafta dışını sil.
-    Şablona dokunma.
-    """
-    # TXT tutma
     cutoff_txt = now_next_minute.date() - datetime.timedelta(days=14)
     for fname in list(os.listdir(log_dir)):
         m = LOG_TXT_PAT.match(fname)
@@ -383,7 +347,6 @@ def retention_cleanup(now_next_minute: datetime.datetime):
             except Exception as e:
                 print(f"[Uyarı] TXT silinemedi ({fname}): {e}")
 
-    # ZIP tutma (son 2 hafta)
     keep_weeks = set()
     y0, w0 = iso_year_week(now_next_minute.date())
     prev = now_next_minute.date() - datetime.timedelta(weeks=1)
@@ -406,7 +369,6 @@ def retention_cleanup(now_next_minute: datetime.datetime):
 
 # === BACKLOG (Geçmiş haftaları hemen gönder) ===
 def iter_week_txts(lab: str, year: int, week: int) -> list[str]:
-    """Belirli LAB ve ISO (yıl, hafta) için TXT dosyalarının isimlerini döndürür."""
     out = []
     for fname in os.listdir(log_dir):
         m = LOG_TXT_PAT.match(fname)
@@ -422,14 +384,11 @@ def iter_week_txts(lab: str, year: int, week: int) -> list[str]:
     return sorted(out, key=lambda n: parse_date(LOG_TXT_PAT.match(n).group(1)))
 
 def ensure_excels_for_week(lab: str, year: int, week: int):
-    """Belirli hafta/LAB için mevcut TXT’lerden eksik kalan Excel’leri üretir."""
-    txt_names = iter_week_txts(lab, year, week)
-    for fname in txt_names:
+    for fname in iter_week_txts(lab, year, week):
         txt_path = os.path.join(log_dir, fname)
         ensure_excel_for_txt(txt_path, lab)
 
 def delete_week_excels(lab: str, year: int, week: int):
-    """Belirli hafta/LAB için üretilmiş Excel’leri siler."""
     for fname in list(os.listdir(log_dir)):
         if not (fname.endswith(".xlsx") and fname.startswith("sensor_log_")):
             continue
@@ -448,17 +407,9 @@ def delete_week_excels(lab: str, year: int, week: int):
                 print(f"[Uyarı] Excel silinemedi ({fname}): {e}")
 
 def send_backlog_completed_weeks():
-    """
-    ŞU ANKİ hafta HARİÇ, klasörde görünen tüm hafta/LAB kombinasyonları için:
-    - TXT→XLSX tamamla
-    - XLSX’leri ziple
-    - ZIP’leri mail at
-    - Başarılı gönderimden sonra o haftanın Excel’lerini sil
-    """
     today = datetime.date.today()
     cur_y, cur_w = iso_year_week(today)
 
-    # Klasörü tarayıp görünen tüm (lab, y, w) setini çıkar
     seen = set()
     for fname in os.listdir(log_dir):
         m = LOG_TXT_PAT.match(fname)
@@ -471,7 +422,7 @@ def send_backlog_completed_weeks():
             continue
         y, w = iso_year_week(dt)
         if (y, w) == (cur_y, cur_w):
-            continue  # içinde bulunduğumuz hafta değil
+            continue
         seen.add((lab, y, w))
 
     if not seen:
@@ -500,7 +451,6 @@ try:
             log_data(lab_name, values)
 
         # 2) Backlog'u bir kereye mahsus çalıştır: geçmiş haftaları HEMEN gönder
-        global BACKLOG_PROCESSED
         if not BACKLOG_PROCESSED:
             send_backlog_completed_weeks()
             BACKLOG_PROCESSED = True
